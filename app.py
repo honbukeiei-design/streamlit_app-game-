@@ -5,6 +5,12 @@ import plotly.express as px
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+# =====================================================
+# 病院経営戦略ゲーム
+# Streamlit app.py
+# 単独プレイ / 仮想近隣病院対戦モード対応
+# =====================================================
+
 st.set_page_config(page_title="病院経営戦略ゲーム", layout="wide")
 
 INITIAL_DATE = date(2026, 4, 1)
@@ -110,24 +116,6 @@ CARE_MODIFIERS = {
     },
 }
 
-
-def build_initial_params(entity, location, care):
-    params = BASE_PARAMS.copy()
-    for modifier in [ENTITY_MODIFIERS[entity], LOCATION_MODIFIERS[location], CARE_MODIFIERS[care]]:
-        for key, value in modifier.items():
-            if key != "description":
-                params[key] = params.get(key, 0) + value
-
-    for key in ["quality", "reputation", "dx", "burnout"]:
-        params[key] = max(0, min(100, int(params[key])))
-
-    params["staff"] = max(20, int(params["staff"]))
-    params["outpatients"] = max(20, int(params["outpatients"]))
-    params["inpatients"] = max(5, int(params["inpatients"]))
-    params["money"] = max(5000, int(params["money"]))
-    return params
-
-
 EVENTS = [
     {
         "id": "emergency_surge",
@@ -229,7 +217,6 @@ EVENTS = [
     },
 ]
 
-
 STRATEGIES = {
     "AI問診・カルテ要約の試行導入": {
         "category": "DX",
@@ -317,6 +304,33 @@ STRATEGIES = {
     },
 }
 
+NEIGHBOR_STRATEGY_NAMES = [
+    "地域連携・紹介受入強化",
+    "加算取得・施設基準点検",
+    "外来待ち時間改善プロジェクト",
+    "退院支援・在院日数適正化チーム",
+    "職員満足度向上・離職防止策",
+    "病床再編・稼働率改善",
+    "現状維持",
+]
+
+
+def build_initial_params(entity, location, care):
+    params = BASE_PARAMS.copy()
+    for modifier in [ENTITY_MODIFIERS[entity], LOCATION_MODIFIERS[location], CARE_MODIFIERS[care]]:
+        for key, value in modifier.items():
+            if key != "description":
+                params[key] = params.get(key, 0) + value
+
+    for key in ["quality", "reputation", "dx", "burnout"]:
+        params[key] = max(0, min(100, int(params[key])))
+
+    params["staff"] = max(20, int(params["staff"]))
+    params["outpatients"] = max(20, int(params["outpatients"]))
+    params["inpatients"] = max(5, int(params["inpatients"]))
+    params["money"] = max(5000, int(params["money"]))
+    return params
+
 
 def clamp(value, minimum=0, maximum=100):
     return max(minimum, min(maximum, int(value)))
@@ -326,15 +340,32 @@ def add_month(d):
     return d + relativedelta(months=1)
 
 
-def make_score():
+def calc_score_from_values(values):
     return int(
-        st.session_state.money * 0.25
-        + st.session_state.quality * 120
-        + st.session_state.reputation * 100
-        + st.session_state.dx * 70
-        - st.session_state.burnout * 110
-        + st.session_state.staff * 20
+        values["money"] * 0.25
+        + values["quality"] * 120
+        + values["reputation"] * 100
+        + values["dx"] * 70
+        - values["burnout"] * 110
+        + values["staff"] * 20
     )
+
+
+def player_values():
+    return {
+        "money": st.session_state.money,
+        "staff": st.session_state.staff,
+        "outpatients": st.session_state.outpatients,
+        "inpatients": st.session_state.inpatients,
+        "quality": st.session_state.quality,
+        "reputation": st.session_state.reputation,
+        "dx": st.session_state.dx,
+        "burnout": st.session_state.burnout,
+    }
+
+
+def make_score():
+    return calc_score_from_values(player_values())
 
 
 def pick_next_event():
@@ -346,32 +377,29 @@ def pick_next_event():
     return random.choice(candidates)
 
 
-def init_game_values(entity, location, care):
-    params = build_initial_params(entity, location, care)
-    st.session_state.turn = 1
-    st.session_state.current_date = INITIAL_DATE
-    st.session_state.money = params["money"]
-    st.session_state.staff = params["staff"]
-    st.session_state.outpatients = params["outpatients"]
-    st.session_state.inpatients = params["inpatients"]
-    st.session_state.quality = params["quality"]
-    st.session_state.reputation = params["reputation"]
-    st.session_state.dx = params["dx"]
-    st.session_state.burnout = params["burnout"]
-    st.session_state.history = []
-    st.session_state.game_log = []
-    st.session_state.used_event_ids = []
-    st.session_state.current_event = pick_next_event()
-    st.session_state.game_started = True
-    st.session_state.entity = entity
-    st.session_state.location = location
-    st.session_state.care = care
-    st.session_state.strategy_picker = 0
+def apply_effects_to_values(values, effects, multiplier=1.0):
+    new_values = values.copy()
+    for key, value in effects.items():
+        new_values[key] = new_values.get(key, 0) + int(value * multiplier)
+    for key in ["quality", "reputation", "dx", "burnout"]:
+        new_values[key] = clamp(new_values[key])
+    new_values["money"] = int(new_values["money"])
+    new_values["staff"] = max(0, int(new_values["staff"]))
+    new_values["outpatients"] = max(0, int(new_values["outpatients"]))
+    new_values["inpatients"] = max(0, int(new_values["inpatients"]))
+    return new_values
 
 
-def reset_game():
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+def natural_monthly_change_values(values):
+    revenue = int(values["outpatients"] * 2.0 + values["inpatients"] * 9.0)
+    staff_cost = int(values["staff"] * 4.2)
+    burnout_loss = int(values["burnout"] * 8)
+    quality_bonus = int((values["quality"] - 50) * 12)
+    reputation_bonus = int((values["reputation"] - 50) * 8)
+    monthly_profit = revenue - staff_cost - burnout_loss + quality_bonus + reputation_bonus
+    values["money"] += monthly_profit
+    values["money"] = int(values["money"])
+    return values, monthly_profit
 
 
 def apply_effects(effects):
@@ -382,19 +410,52 @@ def apply_effects(effects):
 
 
 def natural_monthly_change():
-    revenue = int(st.session_state.outpatients * 2.0 + st.session_state.inpatients * 9.0)
-    staff_cost = int(st.session_state.staff * 4.2)
-    burnout_loss = int(st.session_state.burnout * 8)
-    quality_bonus = int((st.session_state.quality - 50) * 12)
-    reputation_bonus = int((st.session_state.reputation - 50) * 8)
-    monthly_profit = revenue - staff_cost - burnout_loss + quality_bonus + reputation_bonus
-    st.session_state.money += monthly_profit
+    values, monthly_profit = natural_monthly_change_values(player_values())
+    for key, value in values.items():
+        setattr(st.session_state, key, value)
     return monthly_profit
 
 
+def init_game_values(entity, location, care, game_mode):
+    params = build_initial_params(entity, location, care)
+    st.session_state.turn = 1
+    st.session_state.current_date = INITIAL_DATE
+    for key, value in params.items():
+        st.session_state[key] = value
+
+    st.session_state.history = []
+    st.session_state.game_log = []
+    st.session_state.used_event_ids = []
+    st.session_state.current_event = pick_next_event()
+    st.session_state.game_started = True
+    st.session_state.entity = entity
+    st.session_state.location = location
+    st.session_state.care = care
+    st.session_state.game_mode = game_mode
+    st.session_state.strategy_picker = 0
+
+    if game_mode == "仮想近隣病院と対戦":
+        neighbor_params = build_initial_params("私立", location, care)
+        neighbor_params["money"] += 1500
+        neighbor_params["dx"] = clamp(neighbor_params["dx"] + 5)
+        neighbor_params["reputation"] = clamp(neighbor_params["reputation"] + 2)
+        neighbor_params["burnout"] = clamp(neighbor_params["burnout"] + 3)
+        st.session_state.neighbor = neighbor_params
+        st.session_state.neighbor_name = "近隣ライバル病院"
+    else:
+        st.session_state.neighbor = None
+        st.session_state.neighbor_name = ""
+
+
+def reset_game():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
 def status_dataframe():
-    return pd.DataFrame([
+    rows = [
         {"項目": "年月日", "現在値": st.session_state.current_date.strftime("%Y年%m月%d日"), "補足": "1ターンごとに1か月経過"},
+        {"項目": "モード", "現在値": st.session_state.game_mode, "補足": "単独運営または仮想近隣病院との対戦"},
         {"項目": "設立主体", "現在値": st.session_state.entity, "補足": ENTITY_MODIFIERS[st.session_state.entity]["description"]},
         {"項目": "設立場所", "現在値": st.session_state.location, "補足": LOCATION_MODIFIERS[st.session_state.location]["description"]},
         {"項目": "診療内容", "現在値": st.session_state.care, "補足": CARE_MODIFIERS[st.session_state.care]["description"]},
@@ -406,7 +467,8 @@ def status_dataframe():
         {"項目": "医療の質", "現在値": f"{st.session_state.quality}/100", "補足": "安全・質・継続性の総合指標"},
         {"項目": "地域評価", "現在値": f"{st.session_state.reputation}/100", "補足": "住民・診療所・行政からの信頼"},
         {"項目": "職員の疲弊度", "現在値": f"{st.session_state.burnout}/100", "補足": "高いほど離職・質低下リスク"},
-    ])
+    ]
+    return pd.DataFrame(rows)
 
 
 def selected_strategy_effects(selected):
@@ -417,6 +479,53 @@ def selected_strategy_effects(selected):
     return combined
 
 
+def run_neighbor_turn(event):
+    if st.session_state.neighbor is None:
+        return None
+
+    neighbor = st.session_state.neighbor.copy()
+
+    # 近隣病院は状況に応じて1つ、まれに2つ戦略を選択
+    choices = NEIGHBOR_STRATEGY_NAMES.copy()
+    if neighbor["burnout"] > 55 and "職員満足度向上・離職防止策" in choices:
+        selected = ["職員満足度向上・離職防止策"]
+    elif neighbor["money"] < 25000:
+        selected = ["加算取得・施設基準点検"]
+    elif neighbor["reputation"] < 55:
+        selected = ["外来待ち時間改善プロジェクト"]
+    elif neighbor["dx"] < 45:
+        selected = ["RPAで月次集計・報告業務を自動化"] if "RPAで月次集計・報告業務を自動化" in STRATEGIES else ["現状維持"]
+    else:
+        selected = [random.choice(choices)]
+
+    if selected[0] != "現状維持" and random.random() < 0.35:
+        second_candidates = [s for s in choices if s not in selected and s != "現状維持"]
+        if second_candidates:
+            selected.append(random.choice(second_candidates))
+
+    neighbor = apply_effects_to_values(neighbor, event["effects"], multiplier=0.9)
+    for s in selected:
+        neighbor = apply_effects_to_values(neighbor, STRATEGIES[s]["effects"], multiplier=1.0)
+
+    neighbor, profit = natural_monthly_change_values(neighbor)
+    st.session_state.neighbor = neighbor
+
+    return {
+        "strategies": " / ".join(selected),
+        "monthly_profit": profit,
+        "score": calc_score_from_values(neighbor),
+        **neighbor,
+    }
+
+
+def metric_card_cols(prefix, values, score):
+    cols = st.columns(4)
+    cols[0].metric(f"{prefix}外来患者数", f"{values['outpatients']:,} 名/月")
+    cols[1].metric(f"{prefix}入院患者数", f"{values['inpatients']:,} 名/月")
+    cols[2].metric(f"{prefix}資金", f"{values['money']:,} 万円")
+    cols[3].metric(f"{prefix}総合スコア", f"{score:,}")
+
+
 if "game_started" not in st.session_state:
     st.session_state.game_started = False
 
@@ -424,8 +533,19 @@ st.title("病院経営戦略ゲーム")
 st.caption("未来の病院経営を体験するインターンシップ教材｜1ターン＝1か月")
 
 if not st.session_state.game_started:
-    st.header("病院プロファイルを選択してください")
-    st.write("選択した病院タイプに応じて、初期の資金・患者数・職員数・DX指数・地域評価などが変わります。")
+    st.header("初期設定")
+    st.write("病院プロファイルとゲームモードを選択してください。選択内容に応じて初期パラメータが変わります。")
+
+    mode = st.radio(
+        "ゲームモード",
+        ["単独で病院を経営", "仮想近隣病院と対戦"],
+        horizontal=True,
+    )
+
+    if mode == "仮想近隣病院と対戦":
+        st.info("目的：同じ地域にある仮想近隣病院よりも、最終的な経営状況を良くすることです。総合スコア、地域評価、医療の質、DX、職員疲弊度などで比較します。")
+    else:
+        st.info("目的：限られた資源の中で、地域医療・経営・職員負担・DXのバランスを取ることです。")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -449,11 +569,31 @@ if not st.session_state.game_started:
         {"項目": "地域評価", "初期値": f"{preview['reputation']}/100"},
         {"項目": "職員の疲弊度", "初期値": f"{preview['burnout']}/100"},
     ])
-    st.subheader("初期ステータス")
+
+    st.subheader("自院の初期ステータス")
     st.dataframe(preview_df, hide_index=True, use_container_width=True)
 
-    if st.button("この病院でゲーム開始", type="primary"):
-        init_game_values(entity, location, care)
+    if mode == "仮想近隣病院と対戦":
+        neighbor_preview = build_initial_params("私立", location, care)
+        neighbor_preview["money"] += 1500
+        neighbor_preview["dx"] = clamp(neighbor_preview["dx"] + 5)
+        neighbor_preview["reputation"] = clamp(neighbor_preview["reputation"] + 2)
+        neighbor_preview["burnout"] = clamp(neighbor_preview["burnout"] + 3)
+        neighbor_df = pd.DataFrame([
+            {"項目": "資金", "初期値": f"{neighbor_preview['money']:,} 万円"},
+            {"項目": "職員数", "初期値": f"{neighbor_preview['staff']:,} 名"},
+            {"項目": "外来患者数", "初期値": f"{neighbor_preview['outpatients']:,} 名/月"},
+            {"項目": "入院患者数", "初期値": f"{neighbor_preview['inpatients']:,} 名/月"},
+            {"項目": "DX指数", "初期値": f"{neighbor_preview['dx']}/100"},
+            {"項目": "医療の質", "初期値": f"{neighbor_preview['quality']}/100"},
+            {"項目": "地域評価", "初期値": f"{neighbor_preview['reputation']}/100"},
+            {"項目": "職員の疲弊度", "初期値": f"{neighbor_preview['burnout']}/100"},
+        ])
+        st.subheader("仮想近隣病院の初期ステータス")
+        st.dataframe(neighbor_df, hide_index=True, use_container_width=True)
+
+    if st.button("この設定でゲーム開始", type="primary"):
+        init_game_values(entity, location, care, mode)
         st.rerun()
 
     st.stop()
@@ -463,13 +603,15 @@ with st.sidebar:
     st.header("ゲーム設定")
     max_turn = st.slider("総ターン数", 6, min(24, len(EVENTS)), min(12, len(EVENTS)))
     st.divider()
+    st.write("### ゲームモード")
+    st.write(f"**{st.session_state.game_mode}**")
     st.write("### 病院プロファイル")
     st.write(f"設立主体：**{st.session_state.entity}**")
     st.write(f"設立場所：**{st.session_state.location}**")
     st.write(f"診療内容：**{st.session_state.care}**")
     st.divider()
     st.write("### 進め方")
-    st.markdown("1. 毎ターン、未発生の経営イベントが1つ発生\\n2. チームで戦略を最大2つ選択\\n3. 「ターン終了」で1か月進行\\n4. 経営指標の変化を確認")
+    st.markdown("1. 毎ターン、未発生の経営イベントが1つ発生\n2. チームで戦略を最大2つ選択\n3. 「ターン終了」で1か月進行\n4. 経営指標の変化を確認")
     st.divider()
     if st.button("ゲームを最初からやり直す"):
         reset_game()
@@ -477,7 +619,6 @@ with st.sidebar:
 
 
 current_date_text = st.session_state.current_date.strftime("%Y年%m月%d日")
-
 st.subheader(f"現在の病院状況：{current_date_text}")
 
 top1, top2 = st.columns([1.1, 1])
@@ -490,21 +631,32 @@ with top2:
         "指標": ["DX指数", "医療の質", "地域評価", "職員の疲弊度"],
         "値": [st.session_state.dx, st.session_state.quality, st.session_state.reputation, st.session_state.burnout],
     })
-    fig = px.bar(gauge_df, x="指標", y="値", range_y=[0, 100], text="値", title="主要スコア（100点満点）")
+    fig = px.bar(gauge_df, x="指標", y="値", range_y=[0, 100], text="値", title="自院：主要スコア（100点満点）")
     fig.update_traces(texttemplate="%{text}/100", textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="top_player_scores")
 
-metric_cols = st.columns(4)
-metric_cols[0].metric("外来患者数", f"{st.session_state.outpatients:,} 名/月")
-metric_cols[1].metric("入院患者数", f"{st.session_state.inpatients:,} 名/月")
-metric_cols[2].metric("資金", f"{st.session_state.money:,} 万円")
-metric_cols[3].metric("総合スコア", f"{make_score():,}")
+metric_card_cols("", player_values(), make_score())
+
+if st.session_state.game_mode == "仮想近隣病院と対戦":
+    st.write("### 仮想近隣病院との比較")
+    neighbor = st.session_state.neighbor
+    metric_card_cols("近隣病院：", neighbor, calc_score_from_values(neighbor))
+
+    compare_df = pd.DataFrame([
+        {"指標": "資金", "自院": st.session_state.money, "近隣病院": neighbor["money"]},
+        {"指標": "外来患者数", "自院": st.session_state.outpatients, "近隣病院": neighbor["outpatients"]},
+        {"指標": "入院患者数", "自院": st.session_state.inpatients, "近隣病院": neighbor["inpatients"]},
+        {"指標": "DX指数", "自院": st.session_state.dx, "近隣病院": neighbor["dx"]},
+        {"指標": "医療の質", "自院": st.session_state.quality, "近隣病院": neighbor["quality"]},
+        {"指標": "地域評価", "自院": st.session_state.reputation, "近隣病院": neighbor["reputation"]},
+        {"指標": "職員疲弊度", "自院": st.session_state.burnout, "近隣病院": neighbor["burnout"]},
+        {"指標": "総合スコア", "自院": make_score(), "近隣病院": calc_score_from_values(neighbor)},
+    ])
+    st.dataframe(compare_df, hide_index=True, use_container_width=True)
 
 st.divider()
 
-
 st.header(f"TURN {st.session_state.turn}：{current_date_text} の経営会議")
-
 current_event = st.session_state.current_event
 
 st.subheader("今月のイベント")
@@ -576,7 +728,11 @@ if st.button("ターン終了：1か月進める", type="primary", disabled=not 
     st.session_state.outpatients = max(0, int(st.session_state.outpatients))
     st.session_state.inpatients = max(0, int(st.session_state.inpatients))
 
-    st.session_state.history.append({
+    neighbor_result = None
+    if st.session_state.game_mode == "仮想近隣病院と対戦":
+        neighbor_result = run_neighbor_turn(event_before)
+
+    history_row = {
         "turn": st.session_state.turn,
         "date": current_date_text,
         "entity": st.session_state.entity,
@@ -595,7 +751,25 @@ if st.button("ターン終了：1か月進める", type="primary", disabled=not 
         "discussion": discussion_before,
         "monthly_profit": monthly_profit,
         "score": make_score(),
-    })
+    }
+
+    if neighbor_result:
+        history_row.update({
+            "neighbor_money": neighbor_result["money"],
+            "neighbor_staff": neighbor_result["staff"],
+            "neighbor_outpatients": neighbor_result["outpatients"],
+            "neighbor_inpatients": neighbor_result["inpatients"],
+            "neighbor_quality": neighbor_result["quality"],
+            "neighbor_reputation": neighbor_result["reputation"],
+            "neighbor_dx": neighbor_result["dx"],
+            "neighbor_burnout": neighbor_result["burnout"],
+            "neighbor_strategies": neighbor_result["strategies"],
+            "neighbor_monthly_profit": neighbor_result["monthly_profit"],
+            "neighbor_score": neighbor_result["score"],
+            "score_gap": make_score() - neighbor_result["score"],
+        })
+
+    st.session_state.history.append(history_row)
 
     st.session_state.game_log.append({
         "turn": st.session_state.turn,
@@ -604,17 +778,15 @@ if st.button("ターン終了：1か月進める", type="primary", disabled=not 
         "strategies": " / ".join(selected_before),
         "discussion": discussion_before,
         "monthly_profit": monthly_profit,
+        "neighbor_strategies": neighbor_result["strategies"] if neighbor_result else "",
     })
 
     st.session_state.turn += 1
     st.session_state.current_date = add_month(st.session_state.current_date)
     st.session_state.current_event = pick_next_event()
-
-    # 次月の戦略入力欄をリセット
     st.session_state.strategy_picker += 1
 
     st.rerun()
-
 
 if st.session_state.history:
     st.divider()
@@ -622,31 +794,58 @@ if st.session_state.history:
 
     df = pd.DataFrame(st.session_state.history)
 
-    tabs = st.tabs(["資金", "患者数", "主要スコア", "疲弊度", "履歴一覧", "まとめ出力", "経営コメント"])
+    tabs = st.tabs(["資金", "患者数", "主要スコア", "疲弊度", "対戦比較", "履歴一覧", "まとめ出力", "経営コメント"])
 
     with tabs[0]:
-        fig = px.line(df, x="date", y="money", markers=True, title="資金推移（万円）")
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.line(df, x="date", y="money", markers=True, title="自院：資金推移（万円）")
+        st.plotly_chart(fig, use_container_width=True, key="tab_money_player")
+        if "neighbor_money" in df.columns:
+            money_long = df.melt(id_vars=["date"], value_vars=["money", "neighbor_money"], var_name="病院", value_name="資金")
+            money_long["病院"] = money_long["病院"].replace({"money": "自院", "neighbor_money": "近隣病院"})
+            fig2 = px.line(money_long, x="date", y="資金", color="病院", markers=True, title="資金推移：自院 vs 近隣病院")
+            st.plotly_chart(fig2, use_container_width=True, key="tab_money_compare")
 
     with tabs[1]:
         long_df = df.melt(id_vars=["date"], value_vars=["outpatients", "inpatients"], var_name="区分", value_name="患者数")
         long_df["区分"] = long_df["区分"].replace({"outpatients": "外来患者数", "inpatients": "入院患者数"})
-        fig = px.line(long_df, x="date", y="患者数", color="区分", markers=True, title="外来・入院患者数推移")
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.line(long_df, x="date", y="患者数", color="区分", markers=True, title="自院：外来・入院患者数推移")
+        st.plotly_chart(fig, use_container_width=True, key="tab_patients_player")
 
     with tabs[2]:
         score_long = df.melt(id_vars=["date"], value_vars=["quality", "reputation", "dx"], var_name="指標", value_name="値")
         score_long["指標"] = score_long["指標"].replace({"quality": "医療の質", "reputation": "地域評価", "dx": "DX指数"})
-        fig = px.line(score_long, x="date", y="値", color="指標", markers=True, title="主要スコア推移")
+        fig = px.line(score_long, x="date", y="値", color="指標", markers=True, title="自院：主要スコア推移")
         fig.update_yaxes(range=[0, 100])
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="tab_score_player")
 
     with tabs[3]:
-        fig = px.line(df, x="date", y="burnout", markers=True, title="職員の疲弊度推移")
+        fig = px.line(df, x="date", y="burnout", markers=True, title="自院：職員疲弊度推移")
         fig.update_yaxes(range=[0, 100])
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="tab_burnout_player")
+        if "neighbor_burnout" in df.columns:
+            burnout_long = df.melt(id_vars=["date"], value_vars=["burnout", "neighbor_burnout"], var_name="病院", value_name="疲弊度")
+            burnout_long["病院"] = burnout_long["病院"].replace({"burnout": "自院", "neighbor_burnout": "近隣病院"})
+            fig2 = px.line(burnout_long, x="date", y="疲弊度", color="病院", markers=True, title="職員疲弊度：自院 vs 近隣病院")
+            fig2.update_yaxes(range=[0, 100])
+            st.plotly_chart(fig2, use_container_width=True, key="tab_burnout_compare")
 
     with tabs[4]:
+        if "neighbor_score" in df.columns:
+            score_compare = df.melt(id_vars=["date"], value_vars=["score", "neighbor_score"], var_name="病院", value_name="総合スコア")
+            score_compare["病院"] = score_compare["病院"].replace({"score": "自院", "neighbor_score": "近隣病院"})
+            fig = px.line(score_compare, x="date", y="総合スコア", color="病院", markers=True, title="総合スコア：自院 vs 近隣病院")
+            st.plotly_chart(fig, use_container_width=True, key="tab_compare_score")
+
+            latest = df.iloc[-1]
+            gap = int(latest["score_gap"])
+            if gap >= 0:
+                st.success(f"現在、自院が近隣病院を {gap:,} 点上回っています。")
+            else:
+                st.warning(f"現在、自院は近隣病院を {abs(gap):,} 点下回っています。")
+        else:
+            st.info("単独モードのため、対戦比較はありません。")
+
+    with tabs[5]:
         display_df = df.copy()
         display_df = display_df.rename(columns={
             "turn": "ターン",
@@ -667,60 +866,56 @@ if st.session_state.history:
             "discussion": "議論コメント",
             "monthly_profit": "月次自然収支",
             "score": "総合スコア",
+            "neighbor_score": "近隣病院スコア",
+            "neighbor_strategies": "近隣病院戦略",
+            "score_gap": "スコア差",
         })
         st.dataframe(display_df, hide_index=True, use_container_width=True)
-
         csv = display_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "履歴一覧CSVをダウンロード",
-            data=csv,
-            file_name="hospital_management_game_history.csv",
-            mime="text/csv",
-        )
+        st.download_button("履歴一覧CSVをダウンロード", data=csv, file_name="hospital_management_game_history.csv", mime="text/csv")
 
-    with tabs[5]:
+    with tabs[6]:
         st.write("### 出力用：履歴一覧とグラフ")
         st.caption("このタブをブラウザ印刷またはPDF保存すると、履歴一覧と各グラフをまとめて出力できます。")
-
         st.write("#### 履歴一覧")
-        output_df = df.copy().rename(columns={
-            "turn": "ターン",
-            "date": "年月日",
-            "event": "イベント",
-            "strategies": "選択戦略",
-            "discussion": "議論コメント",
-            "money": "資金",
-            "outpatients": "外来患者数",
-            "inpatients": "入院患者数",
-            "quality": "医療の質",
-            "reputation": "地域評価",
-            "dx": "DX指数",
-            "burnout": "職員疲弊度",
-            "score": "総合スコア",
-        })
-        st.dataframe(output_df, hide_index=True, use_container_width=True)
+        st.dataframe(df, hide_index=True, use_container_width=True)
 
         st.write("#### 資金推移")
-        st.plotly_chart(px.line(df, x="date", y="money", markers=True, title="資金推移（万円）"), use_container_width=True)
+        fig_out_money = px.line(df, x="date", y="money", markers=True, title="自院：資金推移（万円）")
+        st.plotly_chart(fig_out_money, use_container_width=True, key="output_money_player")
+
+        if "neighbor_money" in df.columns:
+            money_long = df.melt(id_vars=["date"], value_vars=["money", "neighbor_money"], var_name="病院", value_name="資金")
+            money_long["病院"] = money_long["病院"].replace({"money": "自院", "neighbor_money": "近隣病院"})
+            fig_out_money_compare = px.line(money_long, x="date", y="資金", color="病院", markers=True, title="資金推移：自院 vs 近隣病院")
+            st.plotly_chart(fig_out_money_compare, use_container_width=True, key="output_money_compare")
 
         st.write("#### 患者数推移")
         patient_long = df.melt(id_vars=["date"], value_vars=["outpatients", "inpatients"], var_name="区分", value_name="患者数")
         patient_long["区分"] = patient_long["区分"].replace({"outpatients": "外来患者数", "inpatients": "入院患者数"})
-        st.plotly_chart(px.line(patient_long, x="date", y="患者数", color="区分", markers=True, title="外来・入院患者数推移"), use_container_width=True)
+        fig_out_patient = px.line(patient_long, x="date", y="患者数", color="区分", markers=True, title="自院：外来・入院患者数推移")
+        st.plotly_chart(fig_out_patient, use_container_width=True, key="output_patient_player")
 
         st.write("#### 主要スコア推移")
         score_long2 = df.melt(id_vars=["date"], value_vars=["quality", "reputation", "dx"], var_name="指標", value_name="値")
         score_long2["指標"] = score_long2["指標"].replace({"quality": "医療の質", "reputation": "地域評価", "dx": "DX指数"})
-        score_fig = px.line(score_long2, x="date", y="値", color="指標", markers=True, title="主要スコア推移")
+        score_fig = px.line(score_long2, x="date", y="値", color="指標", markers=True, title="自院：主要スコア推移")
         score_fig.update_yaxes(range=[0, 100])
-        st.plotly_chart(score_fig, use_container_width=True)
+        st.plotly_chart(score_fig, use_container_width=True, key="output_score_player")
 
         st.write("#### 職員疲弊度推移")
-        fatigue_fig = px.line(df, x="date", y="burnout", markers=True, title="職員疲弊度推移")
+        fatigue_fig = px.line(df, x="date", y="burnout", markers=True, title="自院：職員疲弊度推移")
         fatigue_fig.update_yaxes(range=[0, 100])
-        st.plotly_chart(fatigue_fig, use_container_width=True)
+        st.plotly_chart(fatigue_fig, use_container_width=True, key="output_burnout_player")
 
-    with tabs[6]:
+        if "neighbor_score" in df.columns:
+            st.write("#### 総合スコア対戦比較")
+            score_compare = df.melt(id_vars=["date"], value_vars=["score", "neighbor_score"], var_name="病院", value_name="総合スコア")
+            score_compare["病院"] = score_compare["病院"].replace({"score": "自院", "neighbor_score": "近隣病院"})
+            compare_fig = px.line(score_compare, x="date", y="総合スコア", color="病院", markers=True, title="総合スコア：自院 vs 近隣病院")
+            st.plotly_chart(compare_fig, use_container_width=True, key="output_compare_score")
+
+    with tabs[7]:
         st.write("### 現在の経営コメント")
         if st.session_state.money < 15000:
             st.error("資金がかなり厳しい状態です。収益改善・費用見直し・加算取得を検討してください。")
@@ -736,33 +931,38 @@ if st.session_state.history:
         else:
             st.success("職員疲弊は比較的抑えられています。")
 
-        if st.session_state.quality < 50:
-            st.error("医療の質が低下しています。安全・教育・現場支援の施策が必要です。")
-        elif st.session_state.quality >= 80:
-            st.success("医療の質は高い状態です。地域への発信や紹介受入強化につなげられます。")
-
-        if st.session_state.dx >= 75:
-            st.success("DX先進病院として評価される水準です。採用広報にも活用できます。")
-        elif st.session_state.dx < 35:
-            st.warning("DX指数が低めです。小さな自動化やAI活用から始める余地があります。")
-
+        if st.session_state.game_mode == "仮想近隣病院と対戦" and st.session_state.history:
+            latest = pd.DataFrame(st.session_state.history).iloc[-1]
+            if latest["score_gap"] >= 0:
+                st.success("近隣病院よりも良い経営状態です。この優位を維持しましょう。")
+            else:
+                st.warning("近隣病院よりも総合スコアが低い状態です。差が出ている指標を確認しましょう。")
 
 if st.session_state.turn > max_turn:
     st.divider()
     st.header("ゲーム終了")
     final_score = make_score()
-    st.metric("最終総合スコア", f"{final_score:,}")
+    st.metric("自院：最終総合スコア", f"{final_score:,}")
 
-    if final_score >= 65000:
-        st.success("非常に優秀な病院経営です。地域医療、医療の質、職員負担、DXのバランスが取れています。")
-    elif final_score >= 45000:
-        st.info("安定した病院経営です。一部に改善余地はありますが、持続可能性があります。")
+    if st.session_state.game_mode == "仮想近隣病院と対戦":
+        neighbor_score = calc_score_from_values(st.session_state.neighbor)
+        st.metric("近隣病院：最終総合スコア", f"{neighbor_score:,}")
+        if final_score > neighbor_score:
+            st.success("勝利：近隣病院よりも良い経営状態を実現しました。")
+        elif final_score == neighbor_score:
+            st.info("引き分け：近隣病院と同水準の経営状態です。")
+        else:
+            st.error("敗北：近隣病院の方が良い経営状態です。どの指標で差がついたか振り返りましょう。")
     else:
-        st.error("経営改善が必要です。資金、職員疲弊、医療の質、地域評価のどこに課題があるか振り返りましょう。")
+        if final_score >= 65000:
+            st.success("非常に優秀な病院経営です。地域医療、医療の質、職員負担、DXのバランスが取れています。")
+        elif final_score >= 45000:
+            st.info("安定した病院経営です。一部に改善余地はありますが、持続可能性があります。")
+        else:
+            st.error("経営改善が必要です。資金、職員疲弊、医療の質、地域評価のどこに課題があるか振り返りましょう。")
 
     st.write("### 最終ステータス")
     st.dataframe(status_dataframe(), hide_index=True, use_container_width=True)
-
 
 st.divider()
 
@@ -772,6 +972,8 @@ with st.expander("ゲームログ"):
             st.write(f"### TURN {log['turn']}：{log['date']}")
             st.write(f"**イベント：** {log['event']}")
             st.write(f"**選択戦略：** {log['strategies']}")
+            if log.get("neighbor_strategies"):
+                st.write(f"**近隣病院の戦略：** {log['neighbor_strategies']}")
             st.write(f"**月次自然収支：** {log['monthly_profit']:,} 万円")
             if log["discussion"]:
                 st.write(f"**議論メモ：** {log['discussion']}")
